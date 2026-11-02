@@ -30,6 +30,7 @@ class Game {
   constructor(playerIds) {
     const n = playerIds.length;
     if (n < CONFIG.minPlayers || n > CONFIG.maxPlayers) throw new Error('Nombre de joueurs invalide');
+    this.id = Math.random().toString(36).slice(2, 8);
     this.ids = [...playerIds];
     this.n = n;
     this.round = 1;
@@ -196,6 +197,7 @@ class Game {
     const ended = this.phase === 'ended';
     const showCounts = this.phase === 'reveal' || ended;
     return {
+      id: this.id,
       phase: this.phase,
       round: this.round,
       rounds: CONFIG.rounds,

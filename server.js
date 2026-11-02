@@ -44,10 +44,11 @@ function broadcast(room) {
   for (const p of room.players) {
     if (!p.socketId) continue;
     const timeLeftMs = room.deadline ? Math.max(0, room.deadline - Date.now()) : null;
+    const timeTotalMs = room.game ? (CONFIG.timers[room.game.phase] || 0) * 1000 : null;
     io.to(p.socketId).emit('state', {
       ...base,
       myId: p.id,
-      game: room.game ? { ...room.game.viewFor(p.id), timeLeftMs } : null,
+      game: room.game ? { ...room.game.viewFor(p.id), timeLeftMs, timeTotalMs } : null,
     });
   }
 }
