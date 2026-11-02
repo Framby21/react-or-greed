@@ -5,8 +5,11 @@ const CONFIG = {
   maxPlayers: 12,
   rounds: 4,
   handSize: 5,
-  // Durées des phases en secondes (chrono + bouton "Prêt")
-  timers: { insertion: 30, debate: 180, cut: 45, reveal: 20 },
+  // Le neutre (Pilleur) gagne seul s'il fait révéler ce nombre de Vides avec ses jetons
+  lootNeeded: 3,
+  // Durées des phases en secondes (chrono + bouton "Prêt"). null = pas de chrono :
+  // on attend que tous les joueurs connectés aient validé.
+  timers: { insertion: null, debate: 180, cut: 45, reveal: 20 },
 };
 
 // [gentils, méchants, neutre] selon le nombre de joueurs
@@ -44,6 +47,9 @@ class Game {
     this.revealed = []; // { round, ownerId, card, tokens }
     this.lastResult = null; // { counts, revealedIds }
     this.winner = null; // { team: 'good'|'bad'|'neutral', reason }
+    this.loot = 0; // Vides révélées avec un jeton du neutre
+    this.lootNeeded = CONFIG.lootNeeded;
+    this.joker = { usedRound: null, target: null }; // 2e jeton du neutre, une fois par partie
 
     // Rôles
     const [g, b, ne] = ROLE_TABLE[n];
@@ -52,6 +58,12 @@ class Game {
     ]);
     this.roles = {};
     this.ids.forEach((id, i) => { this.roles[id] = roles[i]; });
+
+    // Illustration de rôle : index différent pour chaque joueur d'un même camp
+    // (le client fait index % nombre d'illustrations disponibles)
+    const start = { good: Math.floor(Math.random() * 1000), bad: Math.floor(Math.random() * 1000), neutral: 0 };
+    this.art = {};
+    for (const id of shuffle([...this.ids])) this.art[id] = start[this.roles[id]]++;
 
     // Paquet
     let cid = 0;
@@ -82,20 +94,38 @@ class Game {
 
   // ---- Actions joueurs ----
 
+  // Proposer (ou changer) sa carte : non définitif tant que le joueur n'a pas validé
   insert(pid, cardId) {
     if (this.phase !== 'insertion' || this.acted.has(pid)) return false;
     const hand = this.hands[pid];
     const idx = hand ? hand.findIndex((c) => c.id === cardId) : -1;
     if (idx === -1) return false;
-    this.bars[pid] = hand.splice(idx, 1)[0];
+    const chosen = hand[idx];
+    if (this.bars[pid]) hand[idx] = this.bars[pid]; // l'ancienne carte reprend sa place en main
+    else hand.splice(idx, 1);
+    this.bars[pid] = chosen;
+    return true;
+  }
+
+  confirmInsert(pid) {
+    if (this.phase !== 'insertion' || !this.bars[pid] || this.acted.has(pid)) return false;
     this.acted.add(pid);
     return true;
   }
 
-  cut(pid, targetId) {
+  unconfirmInsert(pid) {
+    if (this.phase !== 'insertion' || !this.acted.has(pid)) return false;
+    this.acted.delete(pid);
+    return true;
+  }
+
+  cut(pid, targetId, jokerTarget = null) {
     if (this.phase !== 'cut' || this.acted.has(pid)) return false;
-    if (targetId !== null) {
-      if (targetId === pid || !this.bars[targetId]) return false;
+    const valid = (t) => t !== pid && !!this.bars[t];
+    if (targetId !== null && !valid(targetId)) return false;
+    if (jokerTarget !== null) {
+      if (this.roles[pid] !== 'neutral' || this.joker.usedRound !== null || !valid(jokerTarget)) return false;
+      this.joker = { usedRound: this.round, target: jokerTarget };
     }
     this.tokens[pid] = targetId;
     this.acted.add(pid);
@@ -162,6 +192,8 @@ class Game {
     const counts = {};
     for (const id of this.ids) counts[id] = 0;
     for (const t of Object.values(this.tokens)) if (t) counts[t]++;
+    const jokerNow = this.joker.usedRound === this.round ? this.joker.target : null;
+    if (jokerNow) counts[jokerNow]++;
 
     // Barres éligibles : seuil atteint ET nombre impair. Égalités départagées au hasard.
     const eligible = shuffle(this.ids.filter((id) => this.bars[id]
@@ -169,23 +201,29 @@ class Game {
       .sort((a, b) => counts[b] - counts[a])
       .slice(0, this.cap);
 
+    const neutralId = this.ids.find((id) => this.roles[id] === 'neutral');
+    const neutralOn = (id) => !!neutralId && (this.tokens[neutralId] === id || jokerNow === id);
+
     let nuclearOwner = null;
     for (const id of eligible) {
       const card = this.bars[id];
       this.revealed.push({ round: this.round, ownerId: id, card, tokens: counts[id] });
       if (card.type === 'nuclear') nuclearOwner = id;
       if (card.type === 'atomic') this.atomicsFound++;
+      if (card.type === 'empty' && neutralOn(id)) this.loot++;
       delete this.bars[id];
     }
     this.lastResult = { counts, revealedIds: eligible };
 
+    // Priorité : Nucléaire > butin du Pilleur > Atomiques
     if (nuclearOwner) {
-      const neutralId = this.ids.find((id) => this.roles[id] === 'neutral');
-      if (neutralId && this.tokens[neutralId] === nuclearOwner) {
+      if (neutralOn(nuclearOwner)) {
         this.winner = { team: 'neutral', reason: 'Le neutre avait un jeton sur la carte Nucléaire !' };
       } else {
         this.winner = { team: 'bad', reason: 'La carte Nucléaire a été révélée !' };
       }
+    } else if (neutralId && this.loot >= this.lootNeeded) {
+      this.winner = { team: 'neutral', reason: `Le Pilleur a fait révéler ${this.lootNeeded} cartes Vides avec ses jetons !` };
     } else if (this.atomicsFound >= this.atomicsNeeded) {
       this.winner = { team: 'good', reason: `${this.atomicsNeeded} cartes Atomiques ont été révélées !` };
     }
@@ -208,15 +246,27 @@ class Game {
       cap: this.cap,
       me: {
         role: this.roles[pid],
+        art: this.art[pid],
         hand: this.hands[pid] || [],
         bar: this.bars[pid] || null,
         acted: this.acted.has(pid),
         token: this.phase === 'cut' || showCounts ? (this.tokens[pid] ?? null) : null,
+        // Infos propres au neutre (jamais envoyées aux autres joueurs)
+        joker: this.roles[pid] === 'neutral' ? {
+          available: this.joker.usedRound === null,
+          usedRound: this.joker.usedRound,
+          target: this.joker.usedRound === this.round && (this.phase === 'cut' || showCounts) ? this.joker.target : null,
+        } : null,
+        loot: this.roles[pid] === 'neutral' ? this.loot : null,
       },
+      lootNeeded: this.lootNeeded,
       seats: this.ids.map((id) => ({
         id,
         handCount: (this.hands[id] || []).length,
-        hasBar: !!this.bars[id] || (this.lastResult?.revealedIds.includes(id) ?? false),
+        // Pendant l'insertion, la barre n'apparaît remplie aux autres qu'une fois validée
+        hasBar: this.phase === 'insertion'
+          ? this.acted.has(id)
+          : !!this.bars[id] || (this.lastResult?.revealedIds.includes(id) ?? false),
         acted: this.acted.has(id),
         tokens: showCounts && this.lastResult ? this.lastResult.counts[id] : null,
         revealedCard: showCounts && this.lastResult?.revealedIds.includes(id)
@@ -227,6 +277,8 @@ class Game {
       lastRevealedCount: this.lastResult ? this.lastResult.revealedIds.length : 0,
       winner: this.winner,
       roles: ended ? this.roles : null,
+      arts: ended ? this.art : null,
+      finalLoot: ended ? this.loot : null,
     };
   }
 }

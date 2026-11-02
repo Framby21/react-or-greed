@@ -59,6 +59,7 @@ function schedule(room) {
   const game = room.game;
   if (!game || game.phase === 'ended') return;
   const secs = CONFIG.timers[game.phase];
+  if (!secs) return; // phase sans chrono : on attend que tout le monde valide
   room.deadline = Date.now() + secs * 1000;
   room.timer = setTimeout(() => {
     if (connectedIds(room).length === 0) { room.paused = true; return; }
@@ -140,12 +141,32 @@ io.on('connection', (socket) => {
 
   socket.on('insert', (cardId) => {
     const { room, player } = findPlayer(socket);
-    if (room?.game?.insert(player.id, cardId)) checkProgress(room);
+    if (room?.game?.insert(player.id, cardId)) broadcast(room);
   });
 
-  socket.on('cut', (targetId) => {
+  socket.on('confirmInsert', () => {
     const { room, player } = findPlayer(socket);
-    if (room?.game?.cut(player.id, targetId ?? null)) checkProgress(room);
+    if (room?.game?.confirmInsert(player.id)) checkProgress(room);
+  });
+
+  socket.on('unconfirmInsert', () => {
+    const { room, player } = findPlayer(socket);
+    if (room?.game?.unconfirmInsert(player.id)) broadcast(room);
+  });
+
+  socket.on('cut', (targetId, jokerTarget) => {
+    const { room, player } = findPlayer(socket);
+    if (room?.game?.cut(player.id, targetId ?? null, jokerTarget ?? null)) checkProgress(room);
+  });
+
+  // L'hôte peut débloquer une phase sans chrono (joueur connecté mais absent)
+  socket.on('forceAdvance', () => {
+    const { room, player } = findPlayer(socket);
+    const game = room?.game;
+    if (!game || !canHost(room, player) || game.phase !== 'insertion') return;
+    game.advance();
+    schedule(room);
+    broadcast(room);
   });
 
   socket.on('ready', () => {
