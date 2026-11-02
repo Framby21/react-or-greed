@@ -1,0 +1,18 @@
+{
+  "name": "react-or-greed",
+  "version": "0.1.0",
+  "description": "React or Greed - jeu de bluff multijoueur en ligne (3 à 12 joueurs)",
+  "main": "server.js",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "socket.io": "^4.8.1"
+  }
+}
